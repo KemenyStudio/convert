@@ -36,5 +36,5 @@ base64
 
 ## run
 'pip install streamlit python-docx xmltodict requests beautifulsoup4'
-'streamlit run app.py'
+´streamlit run app.py´
 
