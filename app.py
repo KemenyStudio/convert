@@ -2,6 +2,7 @@ import re
 import json
 import base64
 import requests
+import sys
 from bs4 import BeautifulSoup
 from docx import Document
 import xmltodict
@@ -58,7 +59,8 @@ def handle_file_upload(file_type, process_function):
 handle_file_upload("docx", docx_to_json)
 handle_file_upload("xml", xml_to_json)
 
-# Web scraping handler
+
+# Json to Web scraping handler
 uploaded_json_file = st.file_uploader("JSON file with URLs Web Scraper", type=["json"])
 if uploaded_json_file is not None:
     json_content = json.load(uploaded_json_file)
@@ -77,3 +79,57 @@ if uploaded_json_file is not None:
         download_href = f'<a href="data:file/json;base64,{b64}" download="scraped_data.json">Download Scraped Data JSON File</a>'
         st.markdown(download_href, unsafe_allow_html=True)
         progress_bar.empty()
+
+# Sitemap Web Scrape function to your code
+def handle_sitemap_url(sitemap_url, progress_bar=None, counter=None, file_index=0, scraped_data=None):
+    if scraped_data is None:
+        scraped_data = []
+    response = requests.get(sitemap_url)
+    response.raise_for_status()
+    sitemap = xmltodict.parse(response.content)
+    progress_bar_value = 0  # Initialize progress bar value
+    if 'urlset' in sitemap:
+        total_urls = len(sitemap['urlset']['url'])
+        for i, url_entry in enumerate(sitemap['urlset']['url']):
+            url = url_entry['loc']
+            if url.endswith('.xml'):
+                # This is a nested sitemap, handle it recursively
+                if progress_bar is not None:
+                    progress_bar_value = i / total_urls
+                    progress_bar.progress(min(progress_bar_value + 0.01, 1.0))
+                scraped_data, file_index = handle_sitemap_url(url, progress_bar, counter, file_index, scraped_data)
+            else:
+                # This is a regular page, scrape its content
+                page_data = scrape_content([url])
+                scraped_data.extend(page_data)
+                counter[0] += 1
+                st.write(f"Scraped {counter[0]} URLs so far.")
+                # Check if the size of scraped_data exceeds 6MB
+                if sys.getsizeof(scraped_data) > 6 * 1024 * 1024:
+                    # Write the current scraped_data to a file
+                    with open(f'scraped_data_{file_index}.json', 'w') as f:
+                        json.dump(scraped_data, f)
+                    # Reset scraped_data and increment file_index
+                    scraped_data = []
+                    file_index += 1
+    elif 'sitemapindex' in sitemap:
+        total_sitemaps = len(sitemap['sitemapindex']['sitemap'])
+        for i, sitemap_entry in enumerate(sitemap['sitemapindex']['sitemap']):
+            url = sitemap_entry['loc']
+            # This is a nested sitemap, handle it recursively
+            if progress_bar is not None:
+                progress_bar_value = i / total_sitemaps
+                progress_bar.progress(min(progress_bar_value + 0.01, 1.0))
+            scraped_data, file_index = handle_sitemap_url(url, progress_bar, counter, file_index, scraped_data)
+    return scraped_data, file_index
+
+# Add this to your Streamlit interface
+sitemap_url = st.text_input("Sitemap URL")
+if sitemap_url:
+    progress_bar = st.progress(0)
+    counter = [0]  # Use a list to hold the counter value
+    scraped_data, file_index = handle_sitemap_url(sitemap_url, progress_bar, counter)
+    # Write the remaining scraped_data to a file
+    with open(f'scraped_data_{file_index}.json', 'w') as f:
+        json.dump(scraped_data, f)
+    st.json(scraped_data)
