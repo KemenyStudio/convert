@@ -4,3 +4,8 @@ docx
 xmltodict
 streamlit
 python-docx
+tqdm
+pytube
+python-dotenv
+ffmpeg
+azure-cognitiveservices-speech

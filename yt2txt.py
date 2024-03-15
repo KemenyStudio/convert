@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 import sys
+import re
 import time
 import ffmpeg
 from tqdm import tqdm
@@ -85,7 +86,7 @@ class AzureSpeechService:
 
     def transcribe_audio(self, audio_file, language=LANGUAGE):
         self.speech_config.speech_recognition_language = language
-        self.speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, '120000')  # 2 minute
+        self.speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, '600000')  # 2 minute
         audio_config = AudioConfig(filename=audio_file)
         speech_recognizer = SpeechRecognizer(speech_config=self.speech_config, audio_config=audio_config)
 
@@ -104,7 +105,7 @@ def progress_function(stream, chunk, bytes_remaining):
     sys.stdout.flush()
 
 def download_youtube_audio(youtube_url):
-    youtube_id = youtube_url.split('=')[-1]
+    youtube_id = re.search(r'(?:v=|/)([0-9A-Za-z_-]{10}[048AEIMQUYcgkosw])', youtube_url).group(1)
     audio_file = f'audio_files/{youtube_id}.mp4'
     wav_file = f'audio_files/{youtube_id}.wav'
 
@@ -112,6 +113,9 @@ def download_youtube_audio(youtube_url):
     if os.path.exists(wav_file):
         print(f'File {wav_file} already exists, skipping download and conversion.')
         return wav_file
+    
+    # Create the audio_files directory if it doesn't exist
+    os.makedirs('audio_files', exist_ok=True)
 
     # Download the YouTube video
     print(f'Downloading YouTube video {youtube_url}...')
