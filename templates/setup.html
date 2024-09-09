@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Setup API Keys</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <h1>Setup API Keys</h1>
+    <form action="/setup" method="post">
+        <label for="api_key">API Key:</label>
+        <input type="text" id="api_key" name="api_key" required>
+        <br>
+        <label for="region">Region:</label>
+        <input type="text" id="region" name="region" required>
+        <br>
+        <label for="language">Language:</label>
+        <input type="text" id="language" name="language" required>
+        <br>
+        <button type="submit">Save</button>
+    </form>
+</body>
+</html>

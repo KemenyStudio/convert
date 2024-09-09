@@ -9,3 +9,9 @@ pytube
 python-dotenv
 ffmpeg
 azure-cognitiveservices-speech
+openpyxl
+openai
+streamlit_chat
+flask
+opencv-python
+PyMuPDF

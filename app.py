@@ -1,135 +1,257 @@
-import re
+from flask import Flask, request, render_template, jsonify, send_file, redirect, url_for
+from utils.convert_xlsx_to_txt import convert_xlsx_to_txt
+from utils.docx_to_json import docx_to_json
+from utils.xml_to_json import xml_to_json
+from utils.youtube_to_text import download_youtube_audio, transcribe_audio
+from utils.pdf_to_json import extract_text_from_pdf
+from utils.web_scraper import scrape_web_content
+from utils.sitemap_scraper import handle_sitemap_url
+from utils.xls_to_csv import convert_xls_to_csv
+from utils.csv_to_json import convert_csv_to_json
+from utils.audio_to_text import transcribe_audio as transcribe_audio_file
+
+import os
+import zipfile
+import io
+import tempfile
 import json
-import base64
-import requests
-import sys
-from bs4 import BeautifulSoup
-from docx import Document
-import xmltodict
-import streamlit as st
 
-st.title("File Converter App")
+app = Flask(__name__)
 
-# Utility functions
-def clean_text(text):
-    """Remove excessive whitespace and clean text."""
-    return re.sub(r'\s+', ' ', text).strip()
+def check_env_file():
+    return os.path.exists('.env')
 
-# File conversion functions
-def docx_to_json(docx_file):
-    doc = Document(docx_file)
-    data = [{"text": para.text, "style": para.style.name} for para in doc.paragraphs]
-    return json.dumps(data, indent=4)
+@app.route('/')
+def index():
+    if not check_env_file():
+        return redirect(url_for('setup'))
+    return render_template('index.html')
 
-def xml_to_json(xml_file):
-    xml_content = xml_file.read()
-    data_dict = xmltodict.parse(xml_content)
-    return json.dumps(data_dict, indent=4)
+@app.route('/setup', methods=['GET', 'POST'])
+def setup():
+    if request.method == 'POST':
+        api_key = request.form['api_key']  # General API Key
+        region = request.form['region']
+        language = request.form['language']
+        azure_openai_endpoint = request.form.get('azure_openai_endpoint', '')
+        azure_openai_api_version = request.form.get('azure_openai_api_version', '')
+        azure_openai_chatgpt_deployment = request.form.get('azure_openai_chatgpt_deployment', '')
+        azure_speech_key = request.form.get('azure_speech_key', '')  # Azure Speech Key
+        azure_speech_region = request.form.get('azure_speech_region', '')
+        youtube_api_key = request.form.get('youtube_api_key', '')  # YouTube API Key
+        with open('.env', 'w') as f:
+            f.write(f"API_KEY={api_key}\n")
+            f.write(f"REGION={region}\n")
+            f.write(f"LANGUAGE={language}\n")
+            if azure_openai_endpoint:
+                f.write(f"AZURE_OPENAI_ENDPOINT={azure_openai_endpoint}\n")
+            if azure_openai_api_version:
+                f.write(f"AZURE_OPENAI_API_VERSION={azure_openai_api_version}\n")
+            if azure_openai_chatgpt_deployment:
+                f.write(f"AZURE_OPENAI_CHATGPT_DEPLOYMENT={azure_openai_chatgpt_deployment}\n")
+            if azure_speech_key:
+                f.write(f"AZURE_SPEECH_KEY={azure_speech_key}\n")
+            if azure_speech_region:
+                f.write(f"AZURE_SPEECH_REGION={azure_speech_region}\n")
+            if youtube_api_key:
+                f.write(f"YOUTUBE_API_KEY={youtube_api_key}\n")
+        return redirect(url_for('index'))
 
-# Web scraping function
-def scrape_content(urls):
-    scraped_data = []
-    for url in urls:
-        page_data = {"url": url, "title": None, "publish_date": None, "content": None}
-        try:
-            response = requests.get(url)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.content, 'html.parser')
-            title_tag = soup.find('title')
-            page_data["title"] = title_tag.get_text() if title_tag else 'No Title Found'
-            date_tag = soup.find(lambda tag: tag.name == "meta" and "publish" in tag.get("name", "").lower())
-            page_data["publish_date"] = date_tag["content"] if date_tag else None
-            raw_content = soup.get_text()
-            page_data["content"] = clean_text(raw_content)
-        except requests.RequestException as e:
-            page_data["content"] = f"Failed to retrieve content: {e}"
-        scraped_data.append(page_data)
-    return scraped_data
+@app.route('/audio_to_text', methods=['POST'])
+def audio_to_text():
+    file = request.files['file']
+    speech_key = os.getenv("AZURE_SPEECH_KEY", request.form.get('azure_speech_key'))
+    service_region = os.getenv("AZURE_SPEECH_REGION", request.form.get('azure_speech_region'))
+    return transcribe_audio_file(file, speech_key, service_region)
 
-# File upload handlers
-def handle_file_upload(file_type, process_function):
-    uploaded_file = st.file_uploader(f"{file_type} to JSON", type=[file_type])
-    if uploaded_file is not None:
-        json_data = process_function(uploaded_file)
-        st.json(json_data)
-        b64 = base64.b64encode(json_data.encode()).decode()
-        href = f'<a href="data:file/json;base64,{b64}" download="converted.json">Download JSON File</a>'
-        st.markdown(href, unsafe_allow_html=True)
+@app.route('/youtube_to_text', methods=['POST'])
+def youtube_to_text():
+    url = request.form['url']
+    speech_key = os.getenv("AZURE_SPEECH_KEY", request.form.get('azure_speech_key'))
+    service_region = os.getenv("AZURE_SPEECH_REGION", request.form.get('azure_speech_region'))
+    audio_file = download_youtube_audio(url)
+    if audio_file:
+        return transcribe_audio(audio_file, speech_key, service_region)
+    return "Error downloading YouTube audio", 500
 
-handle_file_upload("docx", docx_to_json)
-handle_file_upload("xml", xml_to_json)
+@app.route('/convert_xlsx_to_txt', methods=['POST'])
+def convert_xlsx_to_txt_route():
+    files = request.files.getlist('file')
+    output_files = []
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for file in files:
+            output_file_path = os.path.join(temp_dir, f"{file.filename.rsplit('.', 1)[0]}.txt")
+            convert_xlsx_to_txt(file, output_file_path)
+            output_files.append(output_file_path)
+        
+        # Create a zip file
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+            for output_file in output_files:
+                zip_file.write(output_file, os.path.basename(output_file))
+        zip_buffer.seek(0)
+    
+    return send_file(zip_buffer, as_attachment=True, download_name='converted_files.zip', mimetype='application/zip')
 
+@app.route('/docx_to_json', methods=['POST'])
+def docx_to_json_route():
+    files = request.files.getlist('file')
+    output_files = []
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for file in files:
+            output_file_path = os.path.join(temp_dir, f"{file.filename.rsplit('.', 1)[0]}.json")
+            with open(output_file_path, 'w') as f:
+                json.dump(docx_to_json(file), f)
+            output_files.append(output_file_path)
+        
+        # Create a zip file
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+            for output_file in output_files:
+                zip_file.write(output_file, os.path.basename(output_file))
+        zip_buffer.seek(0)
+    
+    return send_file(zip_buffer, as_attachment=True, download_name='converted_files.zip', mimetype='application/zip')
 
-# Json to Web scraping handler
-uploaded_json_file = st.file_uploader("JSON file with URLs Web Scraper", type=["json"])
-if uploaded_json_file is not None:
-    json_content = json.load(uploaded_json_file)
-    if 'urlset' in json_content and 'url' in json_content['urlset']:
-        urls = [url_entry['loc'] for url_entry in json_content['urlset']['url']]
-        progress_bar = st.progress(0)
-        scraped_data = []
-        total_urls = len(urls)
-        for i, url in enumerate(urls, start=1):
-            progress_bar.progress(i / total_urls)
-            page_data = scrape_content([url])
-            scraped_data.extend(page_data)
-        st.json(scraped_data)
-        scraped_data_json = json.dumps(scraped_data, ensure_ascii=False, indent=4)
-        b64 = base64.b64encode(scraped_data_json.encode('utf-8')).decode()
-        download_href = f'<a href="data:file/json;base64,{b64}" download="scraped_data.json">Download Scraped Data JSON File</a>'
-        st.markdown(download_href, unsafe_allow_html=True)
-        progress_bar.empty()
+@app.route('/xml_to_json', methods=['POST'])
+def xml_to_json_route():
+    files = request.files.getlist('file')
+    output_files = []
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for file in files:
+            output_file_path = os.path.join(temp_dir, f"{file.filename.rsplit('.', 1)[0]}.json")
+            with open(output_file_path, 'w') as f:
+                json.dump(xml_to_json(file), f)
+            output_files.append(output_file_path)
+        
+        # Create a zip file
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+            for output_file in output_files:
+                zip_file.write(output_file, os.path.basename(output_file))
+        zip_buffer.seek(0)
+    
+    return send_file(zip_buffer, as_attachment=True, download_name='converted_files.zip', mimetype='application/zip')
 
-# Sitemap Web Scrape function to your code
-def handle_sitemap_url(sitemap_url, progress_bar=None, counter=None, file_index=0, scraped_data=None):
-    if scraped_data is None:
-        scraped_data = []
-    response = requests.get(sitemap_url)
-    response.raise_for_status()
-    sitemap = xmltodict.parse(response.content)
-    progress_bar_value = 0  # Initialize progress bar value
-    if 'urlset' in sitemap:
-        total_urls = len(sitemap['urlset']['url'])
-        for i, url_entry in enumerate(sitemap['urlset']['url']):
-            url = url_entry['loc']
-            if url.endswith('.xml'):
-                # This is a nested sitemap, handle it recursively
-                if progress_bar is not None:
-                    progress_bar_value = i / total_urls
-                    progress_bar.progress(min(progress_bar_value + 0.01, 1.0))
-                scraped_data, file_index = handle_sitemap_url(url, progress_bar, counter, file_index, scraped_data)
-            else:
-                # This is a regular page, scrape its content
-                page_data = scrape_content([url])
-                scraped_data.extend(page_data)
-                counter[0] += 1
-                st.write(f"Scraped {counter[0]} URLs so far.")
-                # Check if the size of scraped_data exceeds 6MB
-                if sys.getsizeof(scraped_data) > 6 * 1024 * 1024:
-                    # Write the current scraped_data to a file
-                    with open(f'scraped_data_{file_index}.json', 'w') as f:
-                        json.dump(scraped_data, f)
-                    # Reset scraped_data and increment file_index
-                    scraped_data = []
-                    file_index += 1
-    elif 'sitemapindex' in sitemap:
-        total_sitemaps = len(sitemap['sitemapindex']['sitemap'])
-        for i, sitemap_entry in enumerate(sitemap['sitemapindex']['sitemap']):
-            url = sitemap_entry['loc']
-            # This is a nested sitemap, handle it recursively
-            if progress_bar is not None:
-                progress_bar_value = i / total_sitemaps
-                progress_bar.progress(min(progress_bar_value + 0.01, 1.0))
-            scraped_data, file_index = handle_sitemap_url(url, progress_bar, counter, file_index, scraped_data)
-    return scraped_data, file_index
+@app.route('/youtube_to_text', methods=['POST'])
+def youtube_to_text_route():
+    youtube_url = request.form['url']
+    audio_file = download_youtube_audio(youtube_url)
+    if audio_file is None:
+        return jsonify({"error": "Failed to download YouTube audio"}), 400
+    transcription = transcribe_audio(audio_file)
+    
+    # Create a zip file
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+        zip_file.writestr('transcription.txt', transcription)
+    zip_buffer.seek(0)
+    
+    return send_file(zip_buffer, as_attachment=True, download_name='transcription.zip', mimetype='application/zip')
 
-# Add this to your Streamlit interface
-sitemap_url = st.text_input("Sitemap URL")
-if sitemap_url:
-    progress_bar = st.progress(0)
-    counter = [0]  # Use a list to hold the counter value
-    scraped_data, file_index = handle_sitemap_url(sitemap_url, progress_bar, counter)
-    # Write the remaining scraped_data to a file
-    with open(f'scraped_data_{file_index}.json', 'w') as f:
-        json.dump(scraped_data, f)
-    st.json(scraped_data)
+@app.route('/pdf_to_json', methods=['POST'])
+def pdf_to_json_route():
+    files = request.files.getlist('file')
+    output_files = []
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for file in files:
+            output_file_path = os.path.join(temp_dir, f"{file.filename.rsplit('.', 1)[0]}.json")
+            with open(output_file_path, 'w') as f:
+                json.dump(extract_text_from_pdf(file), f)
+            output_files.append(output_file_path)
+        
+        # Create a zip file
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+            for output_file in output_files:
+                zip_file.write(output_file, os.path.basename(output_file))
+        zip_buffer.seek(0)
+    
+    return send_file(zip_buffer, as_attachment=True, download_name='converted_files.zip', mimetype='application/zip')
+
+@app.route('/scrape_web_content', methods=['POST'])
+def scrape_web_content_route():
+    url = request.form['url']
+    scraped_data = scrape_web_content(url)
+    
+    # Create a zip file
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+        zip_file.writestr('scraped_content.json', json.dumps(scraped_data))
+    zip_buffer.seek(0)
+    
+    return send_file(zip_buffer, as_attachment=True, download_name='scraped_content.zip', mimetype='application/zip')
+
+@app.route('/sitemap_scraper', methods=['POST'])
+def sitemap_scraper_route():
+    sitemap_url = request.form['url']
+    scraped_data = handle_sitemap_url(sitemap_url)
+    
+    # Create a zip file
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+        zip_file.writestr('sitemap_content.json', json.dumps(scraped_data))
+    zip_buffer.seek(0)
+    
+    return send_file(zip_buffer, as_attachment=True, download_name='sitemap_content.zip', mimetype='application/zip')
+
+@app.route('/audio_to_text', methods=['POST'])
+def audio_to_text_route():
+    files = request.files.getlist('file')
+    output_files = []
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for file in files:
+            transcription = transcribe_audio_file(file)
+            output_file_path = os.path.join(temp_dir, f"{file.filename.rsplit('.', 1)[0]}.txt")
+            with open(output_file_path, 'w') as f:
+                f.write(transcription)
+            output_files.append(output_file_path)
+        
+        # Create a zip file
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+            for output_file in output_files:
+                zip_file.write(output_file, os.path.basename(output_file))
+        zip_buffer.seek(0)
+    
+    return send_file(zip_buffer, as_attachment=True, download_name='transcriptions.zip', mimetype='application/zip')
+
+@app.route('/convert_xls_to_csv', methods=['POST'])
+def convert_xls_to_csv_route():
+    files = request.files.getlist('file')
+    output_files = []
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for file in files:
+            output_files.extend(convert_xls_to_csv(file, temp_dir))
+        
+        # Create a zip file
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+            for output_file in output_files:
+                zip_file.write(output_file, os.path.basename(output_file))
+        zip_buffer.seek(0)
+    
+    return send_file(zip_buffer, as_attachment=True, download_name='converted_files.zip', mimetype='application/zip')
+
+@app.route('/convert_csv_to_json', methods=['POST'])
+def convert_csv_to_json_route():
+    files = request.files.getlist('file')
+    output_files = []
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for file in files:
+            output_file_path = os.path.join(temp_dir, f"{file.filename.rsplit('.', 1)[0]}.json")
+            with open(output_file_path, 'w', encoding='utf-8') as f:
+                json.dump(convert_csv_to_json(file), f)
+            output_files.append(output_file_path)
+        
+        # Create a zip file
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+            for output_file in output_files:
+                zip_file.write(output_file, os.path.basename(output_file))
+        zip_buffer.seek(0)
+    
+    return send_file(zip_buffer, as_attachment=True, download_name='converted_files.zip', mimetype='application/zip')
+
+if __name__ == '__main__':
+    app.run(debug=True)

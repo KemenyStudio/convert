@@ -7,3 +7,4 @@ env
 file.wav
 LogfilePathAndName
 transcribed_text.txt
+venv
